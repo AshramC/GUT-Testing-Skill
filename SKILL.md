@@ -551,11 +551,48 @@ godot --headless -s addons/gut/gut_cmdln.gd -gconfig=
 
 ## 13. 常见模式与最佳实践
 
+### 实例化被测类
+
+#### 判断脚本是否有 class_name
+查看被测脚本开头是否有 `class_name XxxClass` 声明，这决定了实例化方式。
+
+#### 有 class_name 的脚本（推荐方式）
+```gdscript
+# 假设 player.gd 有 class_name Player
+
+# ✓ 直接使用全局类名
+var player = Player.new()
+var player2 = add_child_autofree(Player.new())
+
+# ❌ 不要这样做！会报错: Nonexistent function 'new' in base 'GDScript'
+var Script = load("res://player.gd")
+var player = Script.new()
+```
+
+#### 无 class_name 的脚本
+```gdscript
+# 假设 helper.gd 没有 class_name
+
+# ✓ 使用 load().new()
+var Helper = load("res://helper.gd")
+var helper = Helper.new()
+```
+
+#### 创建 Double（无论有无 class_name）
+```gdscript
+# Double 始终需要 load() + double()，无论是否有 class_name
+var Script = load("res://player.gd")
+var dbl = double(Script).new()
+
+# 部分替身同理
+var partial = partial_double(Script).new()
+```
+
 ### 测试被测类的基本模式
 ```gdscript
 extends GutTest
 
-var _player: Player
+var _player: Player  # 假设 Player 有 class_name
 
 func before_each():
     _player = add_child_autofree(Player.new())
@@ -618,7 +655,7 @@ func test_async_loading():
 
 ---
 
-## 14. 错误处理
+## 14. 错误处理与调试
 
 ### 静态方法处理
 ```gdscript
@@ -642,6 +679,32 @@ var dbl = double(MyClass, DOUBLE_STRATEGY.INCLUDE_NATIVE).new()
 
 ### 常见错误解决
 
+**"Nonexistent function 'new' in base 'GDScript'"**
+```gdscript
+# 原因: 对有 class_name 的脚本使用 load().new()
+# 解决: 直接使用全局类名
+
+# ❌ 错误写法 (假设文件有 class_name Player)
+var Script = load("res://player.gd")
+var obj = Script.new()
+
+# ✓ 正确写法
+var obj = Player.new()
+```
+
+**"Nonexistent function 'new' in base 'Nil'"**
+```gdscript
+# 原因: double() 传入字符串路径，或 load() 路径错误
+# 解决: 确保传入已加载的 Script 资源
+
+# ❌ 错误写法
+var dbl = double("res://my_class.gd").new()
+
+# ✓ 正确写法
+var Script = load("res://my_class.gd")
+var dbl = double(Script).new()
+```
+
 **"Invalid operands 'int' and 'Nil'"**
 ```gdscript
 # 原因: 方法参数默认值在double中变为null
@@ -649,12 +712,97 @@ var dbl = double(MyClass, DOUBLE_STRATEGY.INCLUDE_NATIVE).new()
 stub(dbl, "method").param_defaults([1, "default"])
 ```
 
-**"Nonexistent function 'new' in base 'Nil'"**
+### 场景加载后脚本方法不存在
+
+**症状**: 
+```
+Invalid call. Nonexistent function 'xxx' in base 'Node'.
+```
+
+**原因**: 脚本有编译错误导致未能附加到节点，节点退化为普通 Node
+
+**排查方法**:
 ```gdscript
-# 原因: double()传入了字符串路径
-# 解决: 先load再double
-var MyClass = load("res://my_class.gd")
-var dbl = double(MyClass).new()
+# 1. 先单独测试脚本是否能加载
+func test_script_loads():
+    var script = load("res://path/to/script.gd")
+    assert_not_null(script, "Script should load without errors")
+
+# 2. 测试脚本依赖的其他脚本
+func test_dependencies_load():
+    var dep1 = load("res://path/to/dependency1.gd")
+    var dep2 = load("res://path/to/dependency2.gd")
+    assert_not_null(dep1)
+    assert_not_null(dep2)
+
+# 3. 检查场景实例化后节点类型
+func test_scene_scripts_attached():
+    var scene = load("res://my_scene.tscn")
+    var instance = add_child_autofree(scene.instantiate())
+    await wait_idle_frames(1)
+    
+    var node = instance.get_node("SomeNode")
+    # 如果脚本正确附加，应该能调用脚本方法
+    assert_true(node.has_method("expected_method"), "Script should be attached")
+```
+
+**常见导致脚本加载失败的原因**:
+- 脚本中引用的其他类有编译错误
+- 循环依赖
+- 语法错误（如使用了 `?:` 三元运算符）
+
+---
+
+## 15. GDScript 语法注意事项
+
+在编写测试代码时，注意以下 GDScript 4.x 特有的语法规则：
+
+### 三元运算符
+
+GDScript **不支持** C 风格的 `?:` 三元运算符，必须使用 `if-else` 表达式：
+
+```gdscript
+# ❌ 错误写法 - 会导致编译失败
+var result = condition ? value_if_true : value_if_false
+
+# ✓ 正确写法
+var result = value_if_true if condition else value_if_false
+
+# 示例
+var name = player.name if player != null else "Unknown"
+var damage = base_damage * 2 if is_critical else base_damage
+```
+
+### 类型推断与 null
+
+使用 `:=` 进行类型推断时，不能直接赋值 `null`：
+
+```gdscript
+# ❌ 错误写法 - 无法从 null 推断类型
+var result := null
+
+# ✓ 正确写法 - 显式声明类型
+var result: Variant = null
+var result: Dictionary = {}
+var result: Array = []
+
+# 或者不使用类型推断
+var result = null
+```
+
+### Mock 类中的常见模式
+```gdscript
+# 在测试中创建 Mock 类时的正确写法
+class MockComponent:
+    extends RefCounted
+    var collected := {}
+    var restored: Variant = null  # 注意这里用 Variant 而非 :=
+
+    func collect_state() -> Dictionary:
+        return collected
+
+    func restore_state(state: Dictionary) -> void:
+        restored = state
 ```
 
 ---
@@ -666,6 +814,11 @@ var dbl = double(MyClass).new()
   extends GutTest
   before_all/before_each/after_each/after_all
   func test_xxx():
+
+实例化:
+  有 class_name: ClassName.new()
+  无 class_name: load("...").new()
+  Double: double(load("...")).new()
 
 断言:
   assert_eq/ne/true/false/null/not_null
@@ -699,4 +852,8 @@ Memory:
 
 CLI:
   godot --headless -s addons/gut/gut_cmdln.gd -gexit
+
+GDScript 语法:
+  三元: value_if_true if cond else value_if_false
+  Null 类型: var x: Variant = null (不要用 := null)
 ```

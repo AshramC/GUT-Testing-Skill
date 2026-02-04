@@ -36,6 +36,11 @@ project/
 - [ ] 每个测试至少有一个断言
 - [ ] 测试相互独立，不依赖执行顺序
 
+### 实例化被测类时
+- [ ] 有 `class_name` 的类：直接使用类名 `ClassName.new()`
+- [ ] 无 `class_name` 的类：使用 `load("...").new()`
+- [ ] 创建 Double：始终使用 `double(load("...")).new()`
+
 ### 使用Double时
 - [ ] 先 `load()` 脚本/场景，再 `double()`
 - [ ] 内部类需先 `register_inner_classes()`
@@ -55,6 +60,11 @@ project/
 - [ ] `InputSender` 定义在类级别
 - [ ] `after_each` 中调用 `release_all()` 和 `clear()`
 - [ ] 发送输入后使用 `await` 等待处理
+
+### GDScript 语法检查
+- [ ] 三元表达式使用 `a if cond else b` 而非 `cond ? a : b`
+- [ ] 变量初始化为 null 时使用 `var x: Variant = null` 而非 `var x := null`
+- [ ] Mock 类中的可空字段使用显式类型声明
 
 ---
 
@@ -86,12 +96,54 @@ godot --headless -s addons/gut/gut_cmdln.gd -gjunit_xml_file=results.xml -gexit
 
 | 问题 | 原因 | 解决方案 |
 |------|------|----------|
-| `Nonexistent function 'new' in base 'Nil'` | double传入字符串路径 | 先load()再double() |
-| `Invalid operands 'int' and 'Nil'` | 参数默认值变null | 使用param_defaults() |
-| 信号断言失败 | 未调用watch_signals | 断言前先watch_signals(obj) |
-| 测试超时无响应 | await无超时 | 使用wait_for_signal设超时 |
-| 原生方法无法stub | SCRIPT_ONLY策略 | 使用INCLUDE_NATIVE策略 |
-| 内部类double失败 | 未注册 | 先register_inner_classes() |
+| `Nonexistent function 'new' in base 'GDScript'` | 对有class_name的脚本用load().new() | 直接使用全局类名 `ClassName.new()` |
+| `Nonexistent function 'new' in base 'Nil'` | double传入字符串路径或load路径错误 | 先 `load()` 再 `double()` |
+| `Nonexistent function 'xxx' in base 'Node'` | 脚本编译失败未附加到节点 | 检查脚本及其依赖是否有编译错误 |
+| `Invalid operands 'int' and 'Nil'` | 参数默认值变null | 使用 `param_defaults()` |
+| `Cannot infer the type of "x" variable` | 使用 `:= null` 赋值 | 改为 `var x: Variant = null` |
+| `Unexpected "?" in source` | 使用了 `?:` 三元运算符 | 改为 `a if cond else b` |
+| 信号断言失败 | 未调用watch_signals | 断言前先 `watch_signals(obj)` |
+| 测试超时无响应 | await无超时 | 使用 `wait_for_signal` 设超时 |
+| 原生方法无法stub | SCRIPT_ONLY策略 | 使用 `INCLUDE_NATIVE` 策略 |
+| 内部类double失败 | 未注册 | 先 `register_inner_classes()` |
+
+---
+
+## 调试技巧
+
+### 脚本加载失败排查
+
+当场景实例化后方法调用报错 `Nonexistent function` 时：
+
+```gdscript
+# 1. 验证脚本本身能否加载
+func test_script_loads():
+    var script = load("res://path/to/script.gd")
+    assert_not_null(script, "Script should load")
+
+# 2. 验证依赖脚本
+func test_dependencies():
+    var dep = load("res://path/to/dependency.gd")
+    assert_not_null(dep)
+
+# 3. 验证场景节点脚本是否附加
+func test_scene_node():
+    var scene = load("res://scene.tscn")
+    var inst = add_child_autofree(scene.instantiate())
+    await wait_idle_frames(1)
+    var node = inst.get_node("NodeName")
+    assert_true(node.has_method("expected_method"))
+```
+
+### 快速验证 class_name
+
+```gdscript
+# 如果能直接写类名且编辑器不报错，说明有 class_name
+var player = Player.new()  # ✓ Player 有 class_name
+
+# 如果编辑器报错 "Identifier not found"，说明没有 class_name
+var helper = Helper.new()  # ✗ 需要用 load()
+```
 
 ---
 
